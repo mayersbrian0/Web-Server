@@ -16,50 +16,6 @@ HTTP Web Server
 #define MAXREQSIZE 1024 //max length of the path request
 #define PACKETSIZE 1024 //send 1024 bits at a time
 
-//struct to hold the file data
-typedef struct {
-    long size;
-    char *data;
-} file_data;
-
-//store the contents of the file into the buffer
-file_data* add_fbuffer(char* filename) {
-    long file_size;
-    ssize_t bytes_read;
-    struct stat sb;
-    
-    //check if the file is invalid or a directory
-    if (stat(filename, &sb) != 0 || S_ISDIR(sb.st_mode)) return NULL;
-    
-    FILE* fp = fopen(filename, "rb"); //open the file
-    if (fp == NULL) return NULL; 
-    
-    //get the size of the file
-    fseek(fp, 0L, SEEK_END); 
-    file_size = ftell(fp);
-    fseek(fp, 0L, SEEK_SET);
-    
-    file_data* file = malloc(sizeof( file_data* ));
-    file->size = file_size;
-    file->data = malloc(file_size);
-
-    bytes_read = fread(file->data, 1, file_size, fp);
-    file->data[bytes_read] = '\0';
-    fclose(fp);
-
-    //printf("(add_fbuffer) Total Bytes Read in file %s: %d\n", filename, bytes_read);
-    if (bytes_read != file_size) return NULL; //problem reading entire file
-
-    return file; 
-}
-
-//free the file contents from the file buffer
-void free_fbuffer(file_data* file) {
-    free(file->data);
-    free(file);
-    return;
-}
-
 int open_serverfd(int port) {
 
     int serverfd, optval=1;
@@ -80,54 +36,47 @@ int open_serverfd(int port) {
 
     //reading to accept connection requests
     if (listen(serverfd, 1024) < 0) return -1;
+    printf("Server Listening on Port: %d\n", port);
 
     return serverfd;
 }
 
 //send error message to client
-void send_error(int connection_fd) {
-
+void send_error(int connection_fd, char* version) {
+    char http_error[PACKETSIZE];
+    memset(http_error, 0, PACKETSIZE);
+    sprintf(http_error, "%s 500 Internal Server Error", version);
+    write(connection_fd, http_error, strlen(http_error));
+    return;
 }
 
 //send the packets, 
-void send_packets(int connection_fd, char* version, char* content_type, char* filename) {
+void send_packets(FILE* fp, int connection_fd, int file_size, char* version, char* content_type, char* filename) {
     char http_res[PACKETSIZE]; //send header info first
     char file_contents[PACKETSIZE]; //write other info after
-    file_data* file;
     size_t n;
-    int file_size = 0;
-    struct stat sb;
-    
-    if (stat(filename, &sb) != 0 || S_ISDIR(sb.st_mode)) return NULL;
-    FILE* fp = fopen(filename, "rb"); //open the file
-    if (fp == NULL) {send_error(connection_fd); NULL;}; 
-
-    //get the size of the file
-    fseek(fp, 0L, SEEK_END); 
-    file_size = ftell(fp);
-    fseek(fp, 0L, SEEK_SET);
 
     //send the header message
-    printf("%s\n", version);
     memset(http_res, 0, PACKETSIZE);
     sprintf(http_res, "%s 200 Document Follows\r\nContent-Type:%s\r\nContent-Length:%ld\r\n\r\n", version, content_type, file_size);
     write(connection_fd, http_res, strlen(http_res));
 
     //start writting the file in chuncks
     do {
-        bzero(file_contents, PACKETSIZE);
+        memset(file_contents, 0, PACKETSIZE);
         n = fread(file_contents, 1, PACKETSIZE, fp);
         write(connection_fd, file_contents, n);
     } while (n == PACKETSIZE); 
 
-    fclose(fp);
     return;
 }
 
 //build a http response message
 void parse_response(int connection_fd) {
     char *method = NULL, *url = NULL, *version = NULL, http_req[MAXREQSIZE], tmp_filename[50], filename[50], *content_type = NULL, content_choice[50], send_version[10], v[10];
-    file_data *file;
+    FILE* fp;
+    int file_size = 0;
+    struct stat sb;
     
     //parse the request and extract useful info
     memset(http_req, 0, MAXREQSIZE);
@@ -136,6 +85,7 @@ void parse_response(int connection_fd) {
     url = strtok(NULL, " ");
     version = strtok(NULL, "\n");
     strcpy(v, version);
+    v[7] = '\0';
 
     //send default webpage if appropriate ( / or /inside/ )
     if (strcmp(url, "/") == 0 || strcmp(url, "/inside/") == 0) {
@@ -156,9 +106,19 @@ void parse_response(int connection_fd) {
         strcpy(filename, url);
     }
 
-    //get the content type
+    //check if the file is valid
+    if (stat(filename, &sb) != 0 || S_ISDIR(sb.st_mode)) { send_error(connection_fd, v); return NULL; };
+    fp = fopen(filename, "rb"); //open the file
+    if (fp == NULL) { send_error(connection_fd, v); NULL;}; 
+    
+    //get the size of the file
+    fseek(fp, 0L, SEEK_END); 
+    file_size = ftell(fp);
+    fseek(fp, 0L, SEEK_SET);
+
+    //get the content type if the filename is valid
     strcpy(tmp_filename, filename);
-    strtok(filename, ".");
+    if (strtok(filename, ".") == NULL) {send_error(connection_fd, tmp_filename); return;};
     content_type = strtok(NULL, "");
     if (strncmp(content_type, "html", 4) == 0) {
         strcpy(content_choice, "text/html");
@@ -186,7 +146,8 @@ void parse_response(int connection_fd) {
     }
 
     //after parsing req, send a res message
-    send_packets(connection_fd, v, content_choice, tmp_filename);
+    send_packets(fp, connection_fd, file_size, v, content_choice, tmp_filename);
+    fclose(fp);
     return;
 }
 
