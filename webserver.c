@@ -12,6 +12,7 @@ HTTP Web Server
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #define MAXREQSIZE 1024 //max length of the path request
 #define PACKETSIZE 1024 //send 1024 bits at a time
